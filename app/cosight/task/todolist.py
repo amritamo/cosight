@@ -14,6 +14,7 @@
 #    under the License.
 
 import re
+import time
 from typing import List, Optional, Dict, Tuple
 import os
 import platform
@@ -47,6 +48,8 @@ class Plan:
             self.dependencies = {i: [i - 1] for i in range(1, len(self.steps))} if len(self.steps) > 1 else {}
         self.result = ""
         self.work_space_path = work_space_path if work_space_path else os.environ.get("WORKSPACE_PATH") or os.getcwd()
+        self.execution_start_time: Optional[float] = None
+        self.execution_end_time: Optional[float] = None
 
     def set_plan_result(self, plan_result):
         self.result = plan_result
@@ -159,7 +162,8 @@ class Plan:
                        self.dependencies.get(step_index, [])):
                 raise ValueError(f"Cannot complete step {step_index} before its dependencies are completed")
 
-    def add_tool_call(self, step_index: int, tool_name: str, tool_args: str, tool_result: str = None) -> None:
+    def add_tool_call(self, step_index: int, tool_name: str, tool_args: str,
+                      tool_result: str = None, duration: Optional[float] = None) -> None:
         """Add tool call information to a specific step.
 
         Args:
@@ -167,6 +171,7 @@ class Plan:
             tool_name (str): Name of the tool called
             tool_args (str): Arguments passed to the tool
             tool_result (str): Result returned by the tool (deprecated, will be ignored)
+            duration (Optional[float]): Execution duration in seconds
         """
         # Handle global tools (MCP tools) with step_index = -1
         if step_index == -1:
@@ -179,7 +184,8 @@ class Plan:
                 "tool_name": tool_name,
                 "tool_args": tool_args,
                 "tool_result": tool_result,
-                "timestamp": self._get_current_timestamp()
+                "timestamp": self._get_current_timestamp(),
+                "duration": duration
             }
             self.step_tool_calls[global_key].append(tool_call_info)
             logger.info(f"Added global tool call: {tool_name}")
@@ -194,7 +200,8 @@ class Plan:
             "tool_name": tool_name,
             "tool_args": tool_args,
             "tool_result": tool_result,
-            "timestamp": self._get_current_timestamp()
+            "timestamp": self._get_current_timestamp(),
+            "duration": duration
         }
         
         if step not in self.step_tool_calls:
@@ -206,6 +213,53 @@ class Plan:
         """Get current timestamp string."""
         from datetime import datetime
         return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    def mark_execution_start(self):
+        """Mark the beginning of plan execution."""
+        self.execution_start_time = time.time()
+
+    def mark_execution_end(self):
+        """Mark the completion of plan execution."""
+        self.execution_end_time = time.time()
+
+    def get_total_latency(self) -> Optional[float]:
+        """Return total execution latency if available."""
+        if self.execution_start_time is None or self.execution_end_time is None:
+            return None
+        return max(0.0, self.execution_end_time - self.execution_start_time)
+
+    def _iter_tool_calls(self) -> List[Tuple[str, Dict]]:
+        """Return all tool calls as (step, info) tuples."""
+        entries: List[Tuple[str, Dict]] = []
+        for step in self.steps:
+            for call in self.step_tool_calls.get(step, []):
+                entries.append((step, call))
+        if "__global_tools__" in self.step_tool_calls:
+            for call in self.step_tool_calls["__global_tools__"]:
+                entries.append(("global", call))
+        return entries
+
+    def format_latency_report(self) -> str:
+        """Format a human-readable latency summary."""
+        lines: List[str] = []
+        total_latency = self.get_total_latency()
+        if total_latency is not None:
+            lines.append(f"End-to-End Latency: {total_latency:.2f}s")
+        else:
+            lines.append("End-to-End Latency: N/A")
+
+        lines.append("Tool Call Latencies:")
+        tool_entries = self._iter_tool_calls()
+        if not tool_entries:
+            lines.append("- No tool calls recorded.")
+        else:
+            for step, call in tool_entries:
+                tool_name = call.get("tool_name", "unknown")
+                duration = call.get("duration")
+                duration_str = f"{duration:.2f}s" if isinstance(duration, (int, float)) else "N/A"
+                step_label = step if step != "global" else "Global"
+                lines.append(f"- [{step_label}] {tool_name}: {duration_str}")
+        return "\n".join(lines)
 
     def _normalize_dependencies(self, dependencies: Dict[int, List[int]]) -> Dict[int, List[int]]:
         """将可能为 1 基编号的依赖转换为 0 基编号。

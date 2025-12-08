@@ -25,3 +25,8 @@ tavily-python==0.7.2
 python-socks
 markdownify
 minify-html
+# Evaluation dependencies
+datasets
+pandas
+huggingface_hub
+python-dotenv

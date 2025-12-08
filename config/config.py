@@ -181,6 +181,55 @@ def get_browser_model_config() -> dict[str, Optional[str | int | float]]:
     }
 
 
+# ========== Draft模型配置 ==========
+def get_draft_model_config() -> dict[str, Optional[str | int | float]]:
+    """获取Draft模型专用API配置，用于并行生成候选工具调用"""
+    draft_api_key = os.environ.get("DRAFT_API_KEY")
+    draft_base_url = os.environ.get("DRAFT_API_BASE_URL")
+    model_name = os.environ.get("DRAFT_MODEL_NAME") or os.environ.get("MODEL_NAME_DRAFT")
+
+    # 检查三个字段是否都存在且非空
+    if not (draft_api_key and draft_base_url and model_name):
+        return get_model_config()
+
+    max_tokens = os.environ.get("DRAFT_MAX_TOKENS") or os.environ.get("MAX_TOKENS_DRAFT")
+    temperature = os.environ.get("DRAFT_TEMPERATURE") or os.environ.get("TEMPERATURE_DRAFT")
+
+    return {
+        "api_key": draft_api_key,
+        "base_url": draft_base_url,
+        "model": model_name,
+        "max_tokens": int(max_tokens) if max_tokens and max_tokens.strip() else None,
+        "temperature": float(temperature) if temperature and temperature.strip() else None,
+        "proxy": os.environ.get("DRAFT_PROXY")
+    }
+
+
+# ========== Verifier模型配置 ==========
+def get_verifier_model_config() -> dict[str, Optional[str | int | float]]:
+    """获取Verifier模型专用API配置，用于验证工具调用的正确性"""
+    verifier_api_key = os.environ.get("VERIFIER_API_KEY")
+    verifier_base_url = os.environ.get("VERIFIER_API_BASE_URL")
+    model_name = os.environ.get("VERIFIER_MODEL_NAME")
+
+    # 检查三个字段是否都存在且非空
+    if not (verifier_api_key and verifier_base_url and model_name):
+        # 如果没有配置verifier，使用默认模型配置
+        return get_model_config()
+
+    max_tokens = os.environ.get("VERIFIER_MAX_TOKENS")
+    temperature = os.environ.get("VERIFIER_TEMPERATURE")
+
+    return {
+        "api_key": verifier_api_key,
+        "base_url": verifier_base_url,
+        "model": model_name,
+        "max_tokens": int(max_tokens) if max_tokens and max_tokens.strip() else None,
+        "temperature": float(temperature) if temperature and temperature.strip() else None,
+        "proxy": os.environ.get("VERIFIER_PROXY")
+    }
+
+
 # ========== 工具配置 ==========
 def get_tavily_config() -> Optional[str]:
     """获取tavily兼容API配置"""

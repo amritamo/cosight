@@ -48,7 +48,8 @@ class TaskActorAgent(BaseAgent):
                  vision_llm: ChatLLM,
                  tool_llm: ChatLLM, plan_id,
                  functions: Dict = None,
-                 work_space_path: str = None):
+                 work_space_path: str = None,
+                 draft_llm=None, verifier_llm=None):
         # Set up TaskActorAgent specific properties first
         self.work_space_path = work_space_path if work_space_path else os.environ.get("WORKSPACE_PATH") or os.getcwd()
         
@@ -127,8 +128,9 @@ class TaskActorAgent(BaseAgent):
         if functions:
             all_functions.update(functions)
         
-        # Initialize BaseAgent with all functions and plan_id
-        super().__init__(agent_instance, llm, all_functions, plan_id=plan_id)
+        # Initialize BaseAgent with all functions and plan_id, including draft/verifier LLMs
+        super().__init__(agent_instance, llm, all_functions, plan_id=plan_id,
+                        draft_llm=draft_llm, verifier_llm=verifier_llm)
         
         # Check if plan exists and has title before accessing it
         is_chinese = bool(re.search(r'[\u4e00-\u9fff]', self.plan.title)) if self.plan and self.plan.title else True

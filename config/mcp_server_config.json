@@ -1,1 +1,16 @@
-[]
+[
+  {
+    "skill_name": "MCP技能名称",
+    "skill_type": "local_mcp",
+    "display_name_zh": "MCP工具中文名称",
+    "display_name_en": "MCP工具英文名称",
+    "description_zh": "MCP工具中文描述",
+    "description_en": "MCP工具中文描述",
+    "mcp_server_config": {
+      "command": "python",
+      "args": [
+        "mcp_server.py"
+      ]
+    }
+  }
+]

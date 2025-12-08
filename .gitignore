@@ -23,3 +23,7 @@ work_space/**
 .cursorindexingignore
 .specstory
 scripts/*
+birthplace_coordinates.csv
+birthplaces.txt
+mercedes_sosa_studio_albums_2000-2009.txt
+output/

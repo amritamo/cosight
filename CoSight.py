@@ -14,7 +14,7 @@
 #    under the License.
 from datetime import datetime
 from app.cosight.agent.actor.instance.actor_agent_instance import create_actor_instance
-from llm import llm_for_plan, llm_for_act, llm_for_tool, llm_for_vision
+from llm import llm_for_plan, llm_for_act, llm_for_tool, llm_for_vision, llm_for_draft, llm_for_verifier
 from app.cosight.task.plan_report_manager import plan_report_event_manager
 
 
@@ -32,7 +32,8 @@ from app.common.logger_util import logger
 
 
 class CoSight:
-    def __init__(self, plan_llm, act_llm, tool_llm, vision_llm, work_space_path: str = None, message_uuid: str|None = None):
+    def __init__(self, plan_llm, act_llm, tool_llm, vision_llm, work_space_path: str = None, message_uuid: str|None = None,
+                 draft_llm=None, verifier_llm=None):
         self.work_space_path = work_space_path or os.getenv("WORKSPACE_PATH") or os.getcwd()
         self.plan_id = message_uuid if message_uuid else f"plan_{int(time.time())}"
         self.plan = Plan()
@@ -42,11 +43,15 @@ class CoSight:
         self.act_llm = act_llm  # Store llm for later use
         self.tool_llm = tool_llm
         self.vision_llm = vision_llm
+        self.draft_llm = draft_llm  # Draft model for parallel tool call generation
+        self.verifier_llm = verifier_llm  # Verifier model for validating tool calls
 
     @time_record
     def execute(self, question, output_format=""):
         create_task = question
         retry_count = 0
+        if hasattr(self.plan, "mark_execution_start"):
+            self.plan.mark_execution_start()
         while not self.plan.get_ready_steps() and retry_count < 3:
             create_result = self.task_planner_agent.create_plan(create_task, output_format)
             create_task += f"\nThe plan creation result is: {create_result}\nCreation failed, please carefully review the plan creation rules and select the create_plan tool to create the plan"
@@ -88,6 +93,8 @@ class CoSight:
             import time
             time.sleep(0.1)
         
+        if hasattr(self.plan, "mark_execution_end"):
+            self.plan.mark_execution_end()
         return self.task_planner_agent.finalize_plan(question, output_format)
 
     def _execute_single_step(self, question, step_index):
@@ -101,7 +108,9 @@ class CoSight:
                 self.vision_llm,
                 self.tool_llm,
                 self.plan_id,
-                work_space_path=self.work_space_path
+                work_space_path=self.work_space_path,
+                draft_llm=self.draft_llm,
+                verifier_llm=self.verifier_llm
             )
             result = task_actor_agent.act(question=question, step_index=step_index)
             logger.info(f"Completed execution of step {step_index} with result: {result}")
@@ -127,7 +136,9 @@ class CoSight:
                     self.vision_llm,
                     self.tool_llm,
                     self.plan_id,
-                    work_space_path=self.work_space_path
+                    work_space_path=self.work_space_path,
+                    draft_llm=self.draft_llm,
+                    verifier_llm=self.verifier_llm
                 )
                 result = task_actor_agent.act(question=question, step_index=step_index)
                 logger.info(f"Completed execution of step {step_index} with result: {result}")
@@ -164,7 +175,8 @@ if __name__ == '__main__':
     os.makedirs(work_space_path, exist_ok=True)
 
     # 配置CoSight
-    cosight = CoSight(llm_for_plan, llm_for_act, llm_for_tool, llm_for_vision, work_space_path)
+    cosight = CoSight(llm_for_plan, llm_for_act, llm_for_tool, llm_for_vision, work_space_path,
+                      draft_llm=llm_for_draft, verifier_llm=llm_for_verifier)
 
     # 运行CoSight
     result = cosight.execute("帮我写一篇中兴通讯的分析报告")

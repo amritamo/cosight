@@ -18,6 +18,11 @@ from openai import OpenAI
 from app.common.logger_util import logger
 from app.cosight.llm.chat_llm import ChatLLM
 from config.config import *
+from config.config import (
+    get_plan_model_config, get_act_model_config, get_tool_model_config,
+    get_vision_model_config, get_credibility_model_config, get_draft_model_config,
+    get_verifier_model_config
+)
 
 
 def set_model(model_config: dict[str, Optional[str | int | float]]):
@@ -73,3 +78,11 @@ llm_for_vision = set_model(vision_model_config)
 credibility_model_config = get_credibility_model_config()
 logger.info(f"credibility_model_config:{credibility_model_config}\n")
 llm_for_credibility = set_model(credibility_model_config)
+
+draft_model_config = get_draft_model_config()
+logger.info(f"draft_model_config:{draft_model_config}\n")
+llm_for_draft = set_model(draft_model_config)
+
+verifier_model_config = get_verifier_model_config()
+logger.info(f"verifier_model_config:{verifier_model_config}\n")
+llm_for_verifier = set_model(verifier_model_config)

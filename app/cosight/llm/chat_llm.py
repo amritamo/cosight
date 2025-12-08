@@ -15,8 +15,8 @@
 import json
 import time
 from json import JSONDecodeError
-
-from typing import List, Dict, Any
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import List, Dict, Any, Optional
 
 from openai import OpenAI
 from openai.types.chat import ChatCompletion
@@ -24,7 +24,7 @@ from openai.types.chat import ChatCompletion
 from app.agent_dispatcher.infrastructure.entity.exception.ZaeFrameworkException import ZaeFrameworkException
 from app.cosight.task.time_record_util import time_record
 from app.common.logger_util import logger
-
+import asyncio
 
 class ChatLLM:
     def __init__(self, base_url: str, api_key: str, model: str, client: OpenAI, max_tokens: int = 4096,
@@ -169,3 +169,297 @@ class ChatLLM:
             response.choices[0].message.content = content.split('</think>')[-1].strip('\n')
 
         return response.choices[0].message.content
+
+    @time_record
+    def create_with_tools_draft_verifier(self, messages: List[Dict[str, Any]], tools: List[Dict],
+                                         draft_llm: Optional['ChatLLM'] = None,
+                                         verifier_llm: Optional['ChatLLM'] = None,
+                                         num_draft_candidates: int = 1,
+                                         use_verifier: bool = True):
+        """
+        Create tool calls using draft/verifier pattern for parallel generation and validation.
+        
+        Args:
+            messages: Conversation messages
+            tools: Available tools
+            draft_llm: Draft model for generating candidate tool calls (faster/cheaper)
+            verifier_llm: Verifier model for validating tool calls (more accurate)
+            num_draft_candidates: Number of parallel draft candidates to generate
+            use_verifier: Whether to use verifier model to validate candidates
+        
+        Returns:
+            Message with verified tool calls
+        """
+        # 清洗提示词，去除None
+        messages = ChatLLM.clean_none_values(messages)
+        
+        # If no draft/verifier models provided, fall back to standard method
+        if not draft_llm:
+            logger.info("No draft model provided, using standard create_with_tools")
+            return self.create_with_tools(messages, tools)
+        
+        # Generate multiple draft candidates in parallel
+        print("\n" + "="*80)
+        print("🔵 DRAFT/VERIFIER MODE: Starting parallel tool call generation")
+        print("="*80)
+        logger.info(f"Generating {num_draft_candidates} draft tool call candidates in parallel")
+        draft_candidates = self._generate_draft_candidates(
+            messages, tools, draft_llm, num_draft_candidates
+        )
+        
+        if not draft_candidates:
+            print("⚠️  No draft candidates generated, falling back to standard method")
+            logger.warning("No draft candidates generated, falling back to standard method")
+            return self.create_with_tools(messages, tools)
+        
+        # If verifier is enabled and available, validate candidates
+        if use_verifier and verifier_llm:
+            print("\n" + "-"*80)
+            print("🟢 VERIFIER: Validating draft candidates")
+            print("-"*80)
+            logger.info("Verifying draft candidates with verifier model")
+            verified_response = self._verify_tool_calls(
+                messages, tools, draft_candidates, verifier_llm
+            )
+            if verified_response:
+                print("✅ VERIFIER: Selected verified tool calls")
+                print("="*80 + "\n")
+                return verified_response
+        
+        # If no verifier or verification failed, use the first draft candidate
+        print("\n" + "-"*80)
+        print("📋 SELECTING: Using best draft candidate (no verifier or verification failed)")
+        print("-"*80)
+        logger.info("Using best draft candidate (no verifier or verification failed)")
+        best_candidate = self._select_best_candidate(draft_candidates)
+        print("="*80 + "\n")
+        return best_candidate
+
+    # async def create_with_tools_draft_verifier(
+    #     draft_model,
+    #     verifier_model,
+    #     tool_executor,
+    #     initial_prompt: str,
+    #     max_steps: int = 10,
+    # ) -> Dict[str, Any]:
+    #     """
+    #     Parallel Draft + Verifier Execution Loop.
+
+    #     - Draft model proposes next action (tool call or final answer).
+    #     - If tool call is proposed:
+    #         → Verifier runs in parallel.
+    #         → If approved → tool is executed.
+    #         → If rejected → continue asking draft for another prediction.
+    #     - Loop stops when draft produces a final answer OR max_steps reached.
+    #     """
+
+    #     state = {"messages": [{"role": "user", "content": initial_prompt}]}
+
+    #     async def run_draft(messages) -> Dict[str, Any]:
+    #         """Request next action from draft model."""
+    #         return await draft_model(messages)
+
+    #     async def run_verifier(messages, draft_proposal) -> bool:
+    #         """Ask verifier if draft proposal is valid."""
+    #         verification_prompt = (
+    #             f"Does this draft step look valid? Respond yes/no.\n\n{draft_proposal}"
+    #         )
+    #         v_msgs = messages + [{"role": "assistant", "content": draft_proposal},
+    #                             {"role": "user", "content": verification_prompt}]
+    #         return await verifier_model(v_msgs)
+
+    #     for step in range(max_steps):
+
+    #         # ➤ Step 1: Get next draft proposal
+    #         draft_output = await run_draft(state["messages"])
+    #         draft_msg = draft_output["content"]
+
+    #         # If it's a final answer, return immediately
+    #         if draft_output.get("is_final"):
+    #             state["messages"].append({"role": "assistant", "content": draft_msg})
+    #             return {"final": draft_msg, "steps": step + 1}
+
+    #         # If it's a tool call: run verifier in parallel
+    #         if draft_output.get("tool_call"):
+    #             tool_call = draft_output["tool_call"]
+
+    #             async with asyncio.TaskGroup() as tg:
+    #                 verifier_task = tg.create_task(
+    #                     run_verifier(state["messages"], draft_msg)
+    #                 )
+
+    #             verified = await verifier_task
+
+    #             if verified:
+    #                 # Approved → execute tool
+    #                 tool_result = await tool_executor(tool_call["name"], tool_call["args"])
+    #                 state["messages"].append({
+    #                     "role": "tool",
+    #                     "tool_name": tool_call["name"],
+    #                     "content": tool_result,
+    #                 })
+    #             else:
+    #                 # Rejected → append rejection note and continue drafting
+    #                 state["messages"].append({
+    #                     "role": "assistant",
+    #                     "content": f"[Verifier rejected: {draft_msg}]"
+    #                 })
+
+    #         else:
+    #             # Should not happen, but handle gracefully
+    #             state["messages"].append({"role": "assistant", "content": draft_msg})
+
+    #     return {"final": None, "error": "max_steps_exceeded", "steps": max_steps}
+
+
+    def _generate_draft_candidates(self, messages: List[Dict[str, Any]], tools: List[Dict],
+                                   draft_llm: 'ChatLLM', num_candidates: int) -> List[Any]:
+        """
+        Generate multiple draft tool call candidates in parallel.
+        
+        Returns:
+            List of draft candidate responses
+        """
+        candidates = []
+        
+        candidate_index = [0]  # Use list to allow modification in nested function
+        
+        def generate_single_draft():
+            idx = candidate_index[0]
+            candidate_index[0] += 1
+            try:
+                print(f"  🔷 Draft Candidate {idx + 1}: Generating...")
+                response = draft_llm.create_with_tools(messages, tools)
+                
+                # Print what tools this draft candidate predicted
+                if response and response.tool_calls:
+                    tool_names = [tc.function.name for tc in response.tool_calls]
+                    print(f"  ✅ Draft Candidate {idx + 1}: Predicted {len(response.tool_calls)} tool(s) -> {', '.join(tool_names)}")
+                    for tool_call in response.tool_calls:
+                        print(f"      - {tool_call.function.name}({tool_call.function.arguments[:100]}...)")
+                else:
+                    content_preview = (response.content[:100] + "...") if response and response.content else "No content"
+                    print(f"  📝 Draft Candidate {idx + 1}: No tool calls, content: {content_preview}")
+                
+                return response
+            except Exception as e:
+                print(f"  ❌ Draft Candidate {idx + 1}: Error - {str(e)[:100]}")
+                logger.error(f"Error generating draft candidate: {e}", exc_info=True)
+                return None
+        
+        # Generate candidates in parallel
+        with ThreadPoolExecutor(max_workers=num_candidates) as executor:
+            futures = [executor.submit(generate_single_draft) for _ in range(num_candidates)]
+            
+            for future in as_completed(futures):
+                try:
+                    candidate = future.result(timeout=120)  # 2 minute timeout per candidate
+                    if candidate:
+                        candidates.append(candidate)
+                except Exception as e:
+                    print(f"  ❌ Error getting draft candidate result: {str(e)[:100]}")
+                    logger.error(f"Error getting draft candidate result: {e}", exc_info=True)
+        
+        print(f"\n📊 DRAFT SUMMARY: Generated {len(candidates)}/{num_candidates} successful candidates")
+        logger.info(f"Generated {len(candidates)} draft candidates out of {num_candidates} attempts")
+        return candidates
+
+    def _verify_tool_calls(self, messages: List[Dict[str, Any]], tools: List[Dict],
+                          draft_candidates: List[Any], verifier_llm: 'ChatLLM') -> Optional[Any]:
+        """
+        Use verifier model to validate and select the best tool calls from draft candidates.
+        
+        Returns:
+            Verified response message, or None if verification fails
+        """
+        if not draft_candidates:
+            return None
+        
+        # Prepare verification prompt
+        verification_prompt = self._build_verification_prompt(messages, draft_candidates, tools)
+        
+        try:
+            # Print summary of draft candidates for verification
+            print("\n  📋 Draft Candidates Summary:")
+            for i, candidate in enumerate(draft_candidates, 1):
+                if candidate.tool_calls:
+                    tool_names = [tc.function.name for tc in candidate.tool_calls]
+                    print(f"    Candidate {i}: {len(candidate.tool_calls)} tool(s) -> {', '.join(tool_names)}")
+                else:
+                    print(f"    Candidate {i}: No tool calls")
+            
+            # Ask verifier to select/validate the best tool calls
+            print("  🔍 Verifier: Analyzing candidates...")
+            verification_messages = messages + [{"role": "user", "content": verification_prompt}]
+            verified_response = verifier_llm.create_with_tools(verification_messages, tools)
+            
+            # If verifier returned tool calls, use them
+            if verified_response and verified_response.tool_calls:
+                tool_names = [tc.function.name for tc in verified_response.tool_calls]
+                print(f"  ✅ Verifier: Selected {len(verified_response.tool_calls)} tool(s) -> {', '.join(tool_names)}")
+                for tool_call in verified_response.tool_calls:
+                    print(f"      - {tool_call.function.name}({tool_call.function.arguments[:100]}...)")
+                logger.info(f"Verifier selected {len(verified_response.tool_calls)} tool calls")
+                return verified_response
+            
+            # If verifier didn't return tool calls but we have draft candidates, use best draft
+            print("  ⚠️  Verifier: Did not return tool calls, using best draft candidate")
+            logger.info("Verifier did not return tool calls, using best draft candidate")
+            return self._select_best_candidate(draft_candidates)
+            
+        except Exception as e:
+            print(f"  ❌ Verifier: Error during verification - {str(e)[:100]}")
+            logger.error(f"Error during verification: {e}", exc_info=True)
+            return None
+
+    def _build_verification_prompt(self, messages: List[Dict[str, Any]], 
+                                   draft_candidates: List[Any], tools: List[Dict]) -> str:
+        """
+        Build a prompt for the verifier model to evaluate draft candidates.
+        """
+        prompt_parts = [
+            "You are a tool call verifier. Below are multiple candidate tool calls generated by a draft model.",
+            "Your task is to select the best tool calls or generate improved ones based on the context.\n"
+        ]
+        
+        # Add draft candidates
+        for i, candidate in enumerate(draft_candidates, 1):
+            prompt_parts.append(f"\n--- Draft Candidate {i} ---")
+            if candidate.tool_calls:
+                for tool_call in candidate.tool_calls:
+                    prompt_parts.append(
+                        f"Tool: {tool_call.function.name}\n"
+                        f"Arguments: {tool_call.function.arguments}"
+                    )
+            else:
+                prompt_parts.append(f"Content: {candidate.content}")
+        
+        prompt_parts.append(
+            "\nPlease analyze these candidates and provide the best tool calls for the task. "
+            "You can select from the candidates, combine them, or generate new ones if needed."
+        )
+        
+        return "\n".join(prompt_parts)
+
+    def _select_best_candidate(self, candidates: List[Any]) -> Any:
+        """
+        Select the best candidate from draft candidates.
+        Currently selects the first candidate with tool calls, or the first candidate if none have tool calls.
+        """
+        if not candidates:
+            raise ValueError("No candidates to select from")
+        
+        # Prefer candidates with tool calls
+        candidates_with_tools = [c for c in candidates if c.tool_calls]
+        if candidates_with_tools:
+            # Select the candidate with the most tool calls (most comprehensive)
+            best = max(candidates_with_tools, key=lambda c: len(c.tool_calls) if c.tool_calls else 0)
+            tool_names = [tc.function.name for tc in best.tool_calls] if best.tool_calls else []
+            print(f"  🎯 SELECTED: Best candidate with {len(best.tool_calls) if best.tool_calls else 0} tool(s) -> {', '.join(tool_names)}")
+            for tool_call in (best.tool_calls or []):
+                print(f"      - {tool_call.function.name}({tool_call.function.arguments[:100]}...)")
+            return best
+        
+        # If no candidates have tool calls, return the first one
+        print(f"  📝 SELECTED: First candidate (no tool calls in any candidate)")
+        return candidates[0]

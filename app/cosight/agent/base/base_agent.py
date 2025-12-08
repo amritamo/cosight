@@ -15,9 +15,10 @@
 
 import inspect
 import json
+import os
 import sys
 import time
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
@@ -33,9 +34,17 @@ from app.cosight.agent.base.tool_arg_mapping import FUNCTION_ARG_MAPPING
 
 
 class BaseAgent:
-    def __init__(self, agent_instance: AgentInstance, llm: ChatLLM, functions: {}, plan_id: str = None):
+    def __init__(self, agent_instance: AgentInstance, llm: ChatLLM, functions: {}, plan_id: str = None,
+                 draft_llm: Optional[ChatLLM] = None, verifier_llm: Optional[ChatLLM] = None,
+                 use_draft_verifier: Optional[bool] = None):
         self.agent_instance = agent_instance
         self.llm = llm
+        self.draft_llm = draft_llm
+        self.verifier_llm = verifier_llm
+        # Check environment variable if use_draft_verifier not explicitly set
+        if use_draft_verifier is None:
+            use_draft_verifier = os.environ.get("USE_DRAFT_VERIFIER", "false").lower() == "true"
+        self.use_draft_verifier = use_draft_verifier and (draft_llm is not None)
         self.tools = []
         self.mcp_tools = []
         self.mcp_tools = get_mcp_tools(self.agent_instance.template.skills)
@@ -365,7 +374,27 @@ class BaseAgent:
     def execute(self, messages: List[Dict[str, Any]], step_index=None, max_iteration=10):  #调试修改的10
         for i in range(max_iteration):
             logger.info(f'act agent call with tools message: {messages}')
-            response = self.llm.create_with_tools(messages, self.tools)
+            
+            # Use draft/verifier pattern if enabled and available
+            if self.use_draft_verifier:
+                if i == 0:  # Only print once per execution
+                    print(f"\n🚀 DRAFT/VERIFIER MODE ENABLED (Agent: {self.agent_instance.instance_name}, Step: {step_index})")
+                    print(f"   Draft Model: {self.draft_llm.model if self.draft_llm else 'None'}")
+                    print(f"   Verifier Model: {self.verifier_llm.model if self.verifier_llm else 'None'}")
+                
+                logger.info(f'Using draft/verifier pattern for tool calls (iteration {i})')
+                num_draft_candidates = int(os.environ.get("DRAFT_CANDIDATES", "3"))
+                use_verifier = os.environ.get("USE_VERIFIER", "true").lower() == "true"
+                response = self.llm.create_with_tools_draft_verifier(
+                    messages, self.tools,
+                    draft_llm=self.draft_llm,
+                    verifier_llm=self.verifier_llm,
+                    num_draft_candidates=num_draft_candidates,
+                    use_verifier=use_verifier
+                )
+            else:
+                response = self.llm.create_with_tools(messages, self.tools)
+            
             logger.info(f'act agent call with tools response: {response}')
 
             # Process initial response
@@ -522,7 +551,13 @@ class BaseAgent:
             # 记录工具调用信息到Plan对象（如果有plan引用且step_index有效）
             if self.plan and step_index is not None and hasattr(self.plan, 'add_tool_call'):
                 try:
-                    self.plan.add_tool_call(step_index, function_name, function_args, str(result))
+                    self.plan.add_tool_call(
+                        step_index,
+                        function_name,
+                        function_args,
+                        str(result),
+                        duration=duration
+                    )
                 except Exception as e:
                     logger.warning(f"Failed to record tool call to plan: {e}")
 
@@ -539,6 +574,18 @@ class BaseAgent:
             # 推送工具执行错误事件
             self._push_tool_event("tool_error", function_name, function_args, 
                                 "", step_index, duration, error_msg)
+            
+            if self.plan and step_index is not None and hasattr(self.plan, 'add_tool_call'):
+                try:
+                    self.plan.add_tool_call(
+                        step_index,
+                        function_name,
+                        function_args,
+                        f"Execution error: {error_msg}",
+                        duration=duration
+                    )
+                except Exception as record_err:
+                    logger.warning(f"Failed to record errored tool call to plan: {record_err}")
             
             logger.error(f"Unhandled exception: {e}", exc_info=True)
             return {
@@ -591,7 +638,7 @@ class BaseAgent:
                 if self.plan and hasattr(self.plan, 'add_tool_call'):
                     try:
                         # MCP工具调用没有step_index，使用-1表示全局工具调用
-                        self.plan.add_tool_call(-1, function_name, function_args, str(result))
+                        self.plan.add_tool_call(-1, function_name, function_args, str(result), duration=duration)
                     except Exception as e:
                         logger.warning(f"Failed to record MCP tool call to plan: {e}")
                 
@@ -622,6 +669,12 @@ class BaseAgent:
             # 推送MCP工具执行错误事件
             self._push_tool_event("tool_error", function_name, function_args, 
                                 "", -1, duration, error_msg)
+            
+            if self.plan and hasattr(self.plan, 'add_tool_call'):
+                try:
+                    self.plan.add_tool_call(-1, function_name, function_args, f"Execution error: {error_msg}", duration=duration)
+                except Exception as record_err:
+                    logger.warning(f"Failed to record errored MCP tool call to plan: {record_err}")
             
             logger.error(f"Unhandled exception: {e}", exc_info=True)
             return {

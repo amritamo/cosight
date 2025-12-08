@@ -24,7 +24,7 @@ from starlette.requests import Request
 from fastapi.responses import StreamingResponse
 from urllib.parse import quote
 from app.cosight.task.task_manager import TaskManager
-from llm import llm_for_plan, llm_for_act, llm_for_tool, llm_for_vision
+from llm import llm_for_plan, llm_for_act, llm_for_tool, llm_for_vision, llm_for_draft, llm_for_verifier
 from cosight_server.deep_research.services.i18n_service import i18n
 from cosight_server.deep_research.services.credibility_analyzer import credibility_analyzer
 from app.common.logger_util import logger
@@ -526,7 +526,9 @@ async def search(request: Request, params: Any = Body(None)):
                     llm_for_tool,
                     llm_for_vision,
                     work_space_path=work_space_path_time,
-                    message_uuid = plan_id
+                    message_uuid = plan_id,
+                    draft_llm=llm_for_draft,
+                    verifier_llm=llm_for_verifier
                 )
                 result = cosight.execute(query_content)
                 logger.info(f"final result is {result}")

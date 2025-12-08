@@ -24,6 +24,7 @@ from app.cosight.task.plan_report_manager import plan_report_event_manager
 from app.cosight.task.task_manager import TaskManager
 from app.cosight.tool.plan_toolkit import PlanToolkit
 from app.cosight.tool.terminate_toolkit import TerminateToolkit
+from app.common.logger_util import logger
 
 
 class TaskPlannerAgent(BaseAgent):
@@ -55,6 +56,16 @@ class TaskPlannerAgent(BaseAgent):
         result = self.llm.chat_to_llm(self.history)
         self.plan.set_plan_result(result)
         plan_report_event_manager.publish("plan_result", self.plan)
+        latency_summary = ""
+        if hasattr(self.plan, "format_latency_report"):
+            try:
+                latency_summary = self.plan.format_latency_report()
+            except Exception as e:
+                logger.warning(f"Failed to build latency summary: {e}")
+                latency_summary = "Latency Summary Unavailable"
+        else:
+            latency_summary = "Latency Summary Unavailable"
+        logger.info(f"Latency Summary:\n{latency_summary}")
         return f"""
 Task:
 {question}
@@ -64,4 +75,7 @@ Plan Status:
 
 Summary:
 {result}
+
+Latency Summary:
+{latency_summary}
 """
